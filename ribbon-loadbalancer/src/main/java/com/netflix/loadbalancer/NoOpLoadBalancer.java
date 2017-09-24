@@ -22,6 +22,7 @@ import java.util.List;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import rx.Observable;
 
 /**
  * A noOp Loadbalancer
@@ -43,6 +44,11 @@ public class NoOpLoadBalancer extends AbstractLoadBalancer {
     @Override
     public Server chooseServer(Object key) {       
         return null;
+    }
+
+    @Override
+    public Observable<Server> serverChooser(Object key) {
+        return Observable.never();
     }
 
     @Override

@@ -26,6 +26,8 @@ import com.netflix.client.PrimeConnections;
 import com.netflix.client.config.CommonClientConfigKey;
 import com.netflix.client.config.DefaultClientConfigImpl;
 import com.netflix.client.config.IClientConfig;
+import com.netflix.loadbalancer.reactive.IReactiveRule;
+import com.netflix.loadbalancer.reactive.ReactiveRuleWrapper;
 import com.netflix.servo.annotations.DataSourceType;
 import com.netflix.servo.annotations.Monitor;
 import com.netflix.servo.monitor.Counter;
@@ -34,6 +36,7 @@ import com.netflix.util.concurrent.ShutdownEnabledTimer;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import rx.Observable;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -62,12 +65,12 @@ public class BaseLoadBalancer extends AbstractLoadBalancer implements
 
     private static Logger logger = LoggerFactory
             .getLogger(BaseLoadBalancer.class);
-    private final static IRule DEFAULT_RULE = new RoundRobinRule();
+    private final static IReactiveRule DEFAULT_RULE = new ReactiveRuleWrapper(new RoundRobinRule());
     private final static SerialPingStrategy DEFAULT_PING_STRATEGY = new SerialPingStrategy();
     private static final String DEFAULT_NAME = "default";
     private static final String PREFIX = "LoadBalancer_";
 
-    protected IRule rule = DEFAULT_RULE;
+    protected IReactiveRule rule = DEFAULT_RULE;
 
     protected IPingStrategy pingStrategy = DEFAULT_PING_STRATEGY;
 
@@ -346,7 +349,7 @@ public class BaseLoadBalancer extends AbstractLoadBalancer implements
         return ping;
     }
 
-    public IRule getRule() {
+    public IReactiveRule getRule() {
         return rule;
     }
 
@@ -371,15 +374,25 @@ public class BaseLoadBalancer extends AbstractLoadBalancer implements
 
     /* Ignore null rules */
 
-    public void setRule(IRule rule) {
+    public void setRule(IReactiveRule rule) {
         if (rule != null) {
             this.rule = rule;
         } else {
             /* default rule */
-            this.rule = new RoundRobinRule();
+            this.rule = DEFAULT_RULE;
         }
         if (this.rule.getLoadBalancer() != this) {
             this.rule.setLoadBalancer(this);
+        }
+
+    }
+
+
+    public void setRule(IRule rule) {
+        if (rule instanceof IReactiveRule) {
+            this.setRule((IReactiveRule) rule);
+        } else {
+            this.setRule(new ReactiveRuleWrapper(rule));
         }
     }
 
@@ -725,23 +738,25 @@ public class BaseLoadBalancer extends AbstractLoadBalancer implements
      * @return the dedicated server
      */
     public Server chooseServer(Object key) {
+        return serverChooser(key).toBlocking().first();
+    }
+
+    @Override
+    public Observable<Server> serverChooser(Object key) {
         if (counter == null) {
             counter = createCounter();
         }
         counter.increment();
         if (rule == null) {
-            return null;
+            return Observable.never();
         } else {
-            try {
-                return rule.choose(key);
-            } catch (Exception e) {
-                logger.warn("LoadBalancer [{}]:  Error choosing server for key {}", name, key, e);
-                return null;
-            }
+            return rule.chooser(key);
+
         }
     }
 
     /* Returns either null, or "server:port/servlet" */
+    @Deprecated
     public String choose(Object key) {
         if (rule == null) {
             return null;

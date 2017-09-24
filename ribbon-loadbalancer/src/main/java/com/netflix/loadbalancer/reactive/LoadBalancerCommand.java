@@ -177,7 +177,8 @@ public class LoadBalancerCommand<T> {
      * or queries the load balancer for the next server on each subscription
      */
     private Observable<Server> selectServer() {
-        return Observable.create(new OnSubscribe<Server>() {
+        return loadBalancerContext.getServerChooserFromLoadBalancer(loadBalancerURI, loadBalancerKey);
+        /*return Observable.create(new OnSubscribe<Server>() {
             @Override
             public void call(Subscriber<? super Server> next) {
                 try {
@@ -188,7 +189,7 @@ public class LoadBalancerCommand<T> {
                     next.onError(e);
                 }
             }
-        });
+        });*/
     }
     
     class ExecutionInfoContext {
@@ -273,7 +274,7 @@ public class LoadBalancerCommand<T> {
 
         // Use the load balancer
         Observable<T> o = 
-                (server == null ? selectServer() : Observable.just(server))
+                (server == null ? selectServer() : Observable.just(server)).take(maxRetrysNext + 1)
                 .concatMap(new Func1<Server, Observable<T>>() {
                     @Override
                     // Called for each server being selected
@@ -335,14 +336,11 @@ public class LoadBalancerCommand<T> {
                         
                         if (maxRetrysSame > 0) 
                             o = o.retry(retryPolicy(maxRetrysSame, true));
-                        return o;
+                        return o.onErrorResumeNext(Observable.<T>empty());
                     }
                 });
-            
-        if (maxRetrysNext > 0 && server == null) 
-            o = o.retry(retryPolicy(maxRetrysNext, false));
-        
-        return o.onErrorResumeNext(new Func1<Throwable, Observable<T>>() {
+
+        return o.first().onErrorResumeNext(new Func1<Throwable, Observable<T>>() {
             @Override
             public Observable<T> call(Throwable e) {
                 if (context.getAttemptCount() > 0) {

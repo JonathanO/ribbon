@@ -5,6 +5,8 @@ import static org.junit.Assert.assertEquals;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import com.netflix.loadbalancer.reactive.BaseReactiveRule;
+import com.netflix.loadbalancer.reactive.IReactiveRule;
 import org.junit.Test;
 
 import rx.Observable;
@@ -123,5 +125,75 @@ public class LoadBalancerCommandTest {
         String result = command.submit(operation).toBlocking().single();
         assertEquals("3", result); // server2 is picked first
         assertEquals(1, loadBalancer.getLoadBalancerStats().getSingleServerStat(server3).getTotalRequestsCount());
+    }
+
+    @Test
+    public void testRetryNextServerContextAware() {
+        BaseLoadBalancer loadBalancer = LoadBalancerBuilder.newBuilder().withRule(new CrapRule()).buildFixedServerListLoadBalancer(list);
+        RetryHandler handler = new RetryHandler() {
+            @Override
+            public boolean isRetriableException(Throwable e, boolean sameServer) {
+                return (e instanceof IllegalArgumentException);
+            }
+            @Override
+            public boolean isCircuitTrippingException(Throwable e) {
+                return false;
+            }
+            @Override
+            public int getMaxRetriesOnSameServer() {
+                return 1;
+            }
+            @Override
+            public int getMaxRetriesOnNextServer() {
+                return 5;
+            }
+        };
+        ServerOperation<String> operation = new ServerOperation<String>() {
+            AtomicInteger count = new AtomicInteger();
+            @Override
+            public Observable<String> call(final Server server) {
+                return Observable.create(new OnSubscribe<String>(){
+                    @Override
+                    public void call(Subscriber<? super String> t1) {
+                        if ("1".equals(server.getHost())) {
+                            t1.onError(new IllegalArgumentException());
+                        } else {
+                            t1.onNext(server.getHost());
+                            t1.onCompleted();
+                        }
+                    }
+
+                });
+            }
+        };
+
+        LoadBalancerCommand<String> command = LoadBalancerCommand.<String>builder()
+                .withLoadBalancer(loadBalancer)
+                .withRetryHandler(handler)
+                .build();
+
+        String result = command.submit(operation).toBlocking().single();
+        assertEquals("2", result); // server2 is picked first
+        assertEquals(1, loadBalancer.getLoadBalancerStats().getSingleServerStat(server2).getTotalRequestsCount());
+        assertEquals(0, loadBalancer.getLoadBalancerStats().getSingleServerStat(server3).getTotalRequestsCount());
+    }
+
+    private class CrapRule extends BaseReactiveRule implements IReactiveRule {
+        private ILoadBalancer lb;
+
+        @Override
+        public Observable<Server> chooser(Object key) {
+            return Observable.from(lb.getAllServers());
+        }
+
+        @Override
+        public void setLoadBalancer(ILoadBalancer lb) {
+            this.lb = lb;
+        }
+
+        @Override
+        public ILoadBalancer getLoadBalancer() {
+            return lb;
+        }
     }
 }

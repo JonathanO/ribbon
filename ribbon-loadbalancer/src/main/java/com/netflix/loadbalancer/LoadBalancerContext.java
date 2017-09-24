@@ -31,6 +31,9 @@ import com.netflix.servo.monitor.Timer;
 import com.netflix.util.Pair;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import rx.Observable;
+import rx.exceptions.Exceptions;
+import rx.functions.Func1;
 
 import javax.annotation.Nullable;
 import java.net.URI;
@@ -459,7 +462,13 @@ public class LoadBalancerContext implements IClientConfigAware {
      *
      * @param original Original URI passed from caller
      */
-    public Server getServerFromLoadBalancer(@Nullable URI original, @Nullable Object loadBalancerKey) throws ClientException {
+    @Deprecated
+    public Server getServerFromLoadBalancer(@Nullable final URI original, @Nullable Object loadBalancerKey) throws ClientException {
+        return getServerChooserFromLoadBalancer(original, loadBalancerKey).toBlocking().first();
+    }
+
+    public Observable<Server> getServerChooserFromLoadBalancer(@Nullable final URI original, @Nullable Object loadBalancerKey) {
+
         String host = null;
         int port = -1;
         if (original != null) {
@@ -478,19 +487,24 @@ public class LoadBalancerContext implements IClientConfigAware {
             // Partial URI or no URI Case
             // well we have to just get the right instances from lb - or we fall back
             if (lb != null){
-                Server svc = lb.chooseServer(loadBalancerKey);
-                if (svc == null){
-                    throw new ClientException(ClientException.ErrorType.GENERAL,
-                            "Load balancer does not have available server for client: "
-                                    + clientName);
-                }
-                host = svc.getHost();
-                if (host == null){
-                    throw new ClientException(ClientException.ErrorType.GENERAL,
-                            "Invalid Server for :" + svc);
-                }
-                logger.debug("{} using LB returned Server: {} for request {}", new Object[]{clientName, svc, original});
-                return svc;
+                Observable<Server> chooser = lb.serverChooser(loadBalancerKey);
+                return chooser.map(new Func1<Server, Server>() {
+                    @Override
+                    public Server call(Server svc) {
+                        if (svc == null) {
+                            throw new RuntimeException(new ClientException(ClientException.ErrorType.GENERAL,
+                                    "Load balancer does not have available server for client: "
+                                            + clientName));
+                        }
+                        String host = svc.getHost();
+                        if (host == null) {
+                            throw new RuntimeException(new ClientException(ClientException.ErrorType.GENERAL,
+                                    "Invalid Server for :" + svc));
+                        }
+                        logger.debug("{} using LB returned Server: {} for request {}", new Object[]{clientName, svc, original});
+                        return svc;
+                    }
+                });
             } else {
                 // No Full URL - and we dont have a LoadBalancer registered to
                 // obtain a server
@@ -498,32 +512,34 @@ public class LoadBalancerContext implements IClientConfigAware {
                 // can use that else we
                 // bail out
                 if (vipAddresses != null && vipAddresses.contains(",")) {
-                    throw new ClientException(
+                    return Observable.error(new ClientException(
                             ClientException.ErrorType.GENERAL,
                             "Method is invoked for client " + clientName + " with partial URI of ("
                             + original
                             + ") with no load balancer configured."
                             + " Also, there are multiple vipAddresses and hence no vip address can be chosen"
-                            + " to complete this partial uri");
+                            + " to complete this partial uri"));
                 } else if (vipAddresses != null) {
                     try {
                         Pair<String,Integer> hostAndPort = deriveHostAndPortFromVipAddress(vipAddresses);
                         host = hostAndPort.first();
                         port = hostAndPort.second();
                     } catch (URISyntaxException e) {
-                        throw new ClientException(
+                        return Observable.error(new ClientException(
                                 ClientException.ErrorType.GENERAL,
                                 "Method is invoked for client " + clientName + " with partial URI of ("
                                 + original
                                 + ") with no load balancer configured. "
-                                + " Also, the configured/registered vipAddress is unparseable (to determine host and port)");
+                                + " Also, the configured/registered vipAddress is unparseable (to determine host and port)"));
+                    } catch (ClientException e) {
+                        return Observable.error(e);
                     }
                 } else {
-                    throw new ClientException(
+                    return Observable.error(new ClientException(
                             ClientException.ErrorType.GENERAL,
                             this.clientName
                             + " has no LoadBalancer registered and passed in a partial URL request (with no host:port)."
-                            + " Also has no vipAddress registered");
+                            + " Also has no vipAddress registered"));
                 }
             }
         } else {
@@ -541,19 +557,27 @@ public class LoadBalancerContext implements IClientConfigAware {
                 shouldInterpretAsVip = isVipRecognized(original.getAuthority());
             }
             if (shouldInterpretAsVip) {
-                Server svc = lb.chooseServer(loadBalancerKey);
-                if (svc != null){
-                    host = svc.getHost();
-                    if (host == null){
-                        throw new ClientException(ClientException.ErrorType.GENERAL,
-                                "Invalid Server for :" + svc);
+                Observable<Server> chooser = lb.serverChooser(loadBalancerKey);
+                final String innerHost = host;
+                final int innerPort = port;
+
+                return chooser.map(new Func1<Server, Server>() {
+                    @Override
+                    public Server call(Server svc) {
+                        if (svc != null) {
+                            String host = svc.getHost();
+                            if (host == null) {
+                                throw new RuntimeException(new ClientException(ClientException.ErrorType.GENERAL,
+                                        "Invalid Server for :" + svc));
+                            }
+                            logger.debug("using LB returned Server: {} for request: {}", svc, original);
+                            return svc;
+                        } else {
+                            // just fall back as real DNS
+                            logger.debug("{}:{} assumed to be a valid VIP address or exists in the DNS", innerHost, innerPort);
+                            return new Server(innerHost, innerPort);                    }
                     }
-                    logger.debug("using LB returned Server: {} for request: {}", svc, original);
-                    return svc;
-                } else {
-                    // just fall back as real DNS
-                    logger.debug("{}:{} assumed to be a valid VIP address or exists in the DNS", host, port);
-                }
+                });
             } else {
                 // consult LB to obtain vipAddress backed instance given full URL
                 //Full URL execute request - where url!=vipAddress
@@ -562,11 +586,11 @@ public class LoadBalancerContext implements IClientConfigAware {
         }
         // end of creating final URL
         if (host == null){
-            throw new ClientException(ClientException.ErrorType.GENERAL,"Request contains no HOST to talk to");
+            return Observable.error(new ClientException(ClientException.ErrorType.GENERAL,"Request contains no HOST to talk to"));
         }
         // just verify that at this point we have a full URL
 
-        return new Server(host, port);
+        return Observable.just(new Server(host, port));
     }
 
     public URI reconstructURIWithServer(Server server, URI original) {

@@ -17,6 +17,8 @@
 */
 package com.netflix.loadbalancer;
 
+import rx.Observable;
+
 import java.util.List;
 
 /**
@@ -44,11 +46,15 @@ public abstract class AbstractLoadBalancer implements ILoadBalancer {
     /**
      * delegate to {@link #chooseServer(Object)} with parameter null.
      */
+    @Deprecated
     public Server chooseServer() {
     	return chooseServer(null);
     }
 
-    
+    public Observable<Server> serverChooser() {
+        return serverChooser(null);
+    }
+
     /**
      * List of servers that this Loadbalancer knows about
      * 

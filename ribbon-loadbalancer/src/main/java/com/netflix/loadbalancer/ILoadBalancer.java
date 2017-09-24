@@ -17,6 +17,8 @@
 */
 package com.netflix.loadbalancer;
 
+import rx.Observable;
+
 import java.util.List;
 
 /**
@@ -47,7 +49,10 @@ public interface ILoadBalancer {
 	 *         the load balancer does not use this parameter.
 	 * @return server chosen
 	 */
+	@Deprecated
 	public Server chooseServer(Object key);
+
+	public Observable<Server> serverChooser(Object key);
 	
 	/**
 	 * To be called by the clients of the load balancer to notify that a Server is down

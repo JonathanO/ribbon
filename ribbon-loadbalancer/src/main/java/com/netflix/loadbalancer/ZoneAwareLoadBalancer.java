@@ -23,6 +23,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
+import com.netflix.loadbalancer.reactive.IReactiveRule;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -177,10 +178,9 @@ public class ZoneAwareLoadBalancer<T extends Server> extends DynamicServerListLo
     	}
     	return rule;
     }
-    
-       
+
     @Override
-    public void setRule(IRule rule) {
+    public void setRule(IReactiveRule rule) {
         super.setRule(rule);
         if (balancers != null) {
             for (String zone: balancers.keySet()) {
@@ -188,4 +188,5 @@ public class ZoneAwareLoadBalancer<T extends Server> extends DynamicServerListLo
             }
         }
     }
+
 }
